@@ -595,8 +595,10 @@ do {
 
     // 6c) Muto e ripristino dai tasti.
     var mutedLevel = 0.0
+    var muteNs = 0.0
     let rec3 = runTimed(seconds: 3.6, generator: tone) {
         Thread.sleep(forTimeInterval: 0.8)
+        muteNs = nowNs()
         router.setUserMuted(true, source: .keys)
         Thread.sleep(forTimeInterval: 1.4)
         router.setUserMuted(false, source: .keys)
@@ -608,8 +610,11 @@ do {
     // Residuo rispetto al livello pieno (durante muto e ripresa il livello effettivo tende a zero).
     func absResidue(_ v: ArraySlice<Float>) -> Double { broadbandResidue(v, hp: 2500) * sqrt(2) }
     let res3 = 20 * log10(max(absResidue(s3[(on3 + 4800)...]), 1e-12) / full)
-    let midMute = on3 + Int(1.0 * sampleRate) + 9600
-    if midMute + 4800 < s3.count { mutedLevel = Double(s3[midMute..<(midMute + 4800)].map { abs($0) }.max() ?? 0) }
+    // Livello a muto misurato da 0,8 a 1,0 s DOPO il comando (la dissolvenza a due stadi, τ 40 ms,
+    // scende sotto -80 dB in ~0,5 s), con i tempi della registrazione; il ripristino avviene a +1,4 s.
+    if let m0 = rec3.index(atNs: muteNs + 0.8e9), m0 + 9600 < s3.count {
+        mutedLevel = Double(s3[m0..<(m0 + 9600)].map { abs($0) }.max() ?? 0)
+    } else { print("FALLITO: 6c istante del muto non trovato nella registrazione"); failures += 1 }
     print(String(format: "  6c) muto/ripristino: residuo %.1f dB rispetto al tono, livello a muto %.1f dB", res3,
                  20 * log10(max(mutedLevel, 1e-9) / full)))
     if res3 > -60 { print("FALLITO: click con muto/ripristino (soglia -60 dB)"); failures += 1 }
