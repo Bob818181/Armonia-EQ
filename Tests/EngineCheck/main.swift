@@ -653,28 +653,27 @@ do {
     Thread.sleep(forTimeInterval: 0.6)
     router.setUserVolume(0.25, source: .keys)
     Thread.sleep(forTimeInterval: 0.8) // micro-passi in corso
-    // Trascinamento nel Centro di Controllo: una serie di scritture ravvicinate che finisce a 0,625.
+    // Trascinamento nel Centro di Controllo: scritture da un ALTRO processo (osascript, come il Centro
+    // di Controllo e le Impostazioni), che finiscono a 62 %. Dallo stesso processo Core Audio può
+    // restituire alla nostra lettura un valore in cache non aggiornato: non rappresenterebbe l'uso reale.
     router.log = { print("      [router] \($0)") }
     let st6e = router.walkerSteps, ex6e = router.externalVolumeChanges
-    var readBack: [String] = []
-    for k in 0..<8 {
-        let w = 0.59 + Float(k) * 0.005
-        let ok = CA.setVolumeScalar(loopback.id, scope: .output, w)
-        readBack.append(String(format: "%.4f%@→%.4f", w, ok ? "" : "(errore)", CA.volumeScalar(loopback.id, scope: .output) ?? -1))
-        Thread.sleep(forTimeInterval: 0.03)
+    for pct in [59, 60, 61, 62] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", "set volume output volume \(pct)"]
+        try? p.run(); p.waitUntilExit()
     }
-    print("      scritture esterne e rilettura: \(readBack.joined(separator: " "))")
-    print("      durante il trascinamento: micro-passi \(router.walkerSteps - st6e), cambi esterni rilevati \(router.externalVolumeChanges - ex6e), utente \(router.userVolume)")
-    CA.setVolumeScalar(loopback.id, scope: .output, 0.625)
     Thread.sleep(forTimeInterval: 0.5)
+    print("      durante il trascinamento: micro-passi \(router.walkerSteps - st6e), cambi esterni rilevati \(router.externalVolumeChanges - ex6e), utente \(router.userVolume)")
     let bhAfter = CA.volumeScalar(loopback.id, scope: .output) ?? -1
     let hwAfter = CA.volumeScalar(fakeOutput.id, scope: .output) ?? -1
     while tonePlaying { Thread.sleep(forTimeInterval: 0.1) }
     router.log = nil
-    if abs(bhAfter - 0.625) > 0.001 { print(String(format: "FALLITO: il volume di macOS impostato dall'esterno è stato sovrascritto (%.4f)", bhAfter)); failures += 1 }
-    print(String(format: "  6e) trascinamento esterno fino a 0.625 durante l'allineamento: volume utente %.3f, volume di macOS %.4f, volume hardware uscita %.3f",
+    if abs(bhAfter - 0.62) > 0.006 { print(String(format: "FALLITO: il volume di macOS impostato dall'esterno è stato sovrascritto (%.4f)", bhAfter)); failures += 1 }
+    print(String(format: "  6e) volume cambiato da un altro processo (59→62 %%) durante l'allineamento: volume utente %.3f, volume di macOS %.4f, volume hardware uscita %.3f",
                  router.userVolume, bhAfter, hwAfter))
-    if abs(router.userVolume - 0.625) > 0.001 { print("FALLITO: cambio di volume esterno non recepito"); failures += 1 }
+    if abs(router.userVolume - bhAfter) > 0.001 || abs(bhAfter - 0.62) > 0.006 { print("FALLITO: cambio di volume esterno non recepito"); failures += 1 }
     if abs(hwAfter - 1) > 0.001 { print("FALLITO: il cambio esterno ha modificato il volume hardware"); failures += 1 }
     // 6f) Senza audio l'indicatore di macOS si allinea subito (nessun gradino udibile possibile).
     Thread.sleep(forTimeInterval: 1.0) // nessun audio: l'inviluppo d'ingresso decade
