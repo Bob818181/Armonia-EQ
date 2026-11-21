@@ -487,6 +487,37 @@ func relativeResidueDb(_ x: ArraySlice<Float>, periodSamples: Int) -> Double {
     return 20 * log10(max(worst, 1e-12))
 }
 
+/// Interruzione dell'audio della macchina di CI (non del motore): un blocco di 5 ms il cui picco
+/// crolla sotto il 10 % dei blocchi precedenti. Una tacca di volume (4 dB, con rampa) non lo fa mai.
+func hasDropout(_ x: ArraySlice<Float>) -> Bool {
+    let blocks = stride(from: x.startIndex, to: x.endIndex - 240, by: 240).map { i in x[i..<(i + 240)].map { abs($0) }.max() ?? 0 }
+    guard blocks.count > 20 else { return false }
+    for k in 4..<(blocks.count - 4) {
+        let ref = blocks[(k - 4)..<k].max() ?? 0
+        if ref > 1e-3, blocks[k] < 0.1 * ref { return true }
+    }
+    return false
+}
+
+/// Registra con `record` e misura il residuo; se il residuo supera la soglia per un'interruzione
+/// dell'audio della CI, ripete la misura (max 3 tentativi), come per le misure dei toni.
+func residueWithRetry(_ label: String, _ record: () -> [Float]) -> Double {
+    var r = 0.0
+    for attempt in 1...3 {
+        let x = record()
+        let pk = x.map { abs($0) }.max() ?? 0
+        guard pk > 1e-3, let on = x.firstIndex(where: { abs($0) > pk * 0.5 }), on + 9600 < x.count else {
+            print("  ATTENZIONE: \(label): registrazione silenziosa, tentativo \(attempt)"); continue
+        }
+        let body = x[(on + 4800)..<(x.count - 2400)]
+        r = relativeResidueDb(body, periodSamples: 240)
+        if r <= -60 || !hasDropout(body) { return r }
+        dropoutCount += 1
+        print(String(format: "  ATTENZIONE: interruzione dell'audio della CI durante %@ (residuo %.1f dB), tentativo %d", label, r, attempt))
+    }
+    return r
+}
+
 print("\nFase 6: tasti volume durante la riproduzione (click, livelli, sincronismo con macOS)")
 do {
     // Configurazione realistica: profilo Pop, Auto Gain acceso, limiter acceso.
@@ -507,7 +538,12 @@ do {
 
     // 6a) 16 tacche (8 giù, 8 su) ogni 250 ms, come tenere premuti/rilasciare i tasti volume.
     var marks: [(ns: Double, v: Float)] = []
-    let rec = runTimed(seconds: 6.5, generator: tone) {
+    var rec = TimedRecording(samples: [], stamps: [])
+    let res = residueWithRetry("6a") {
+    marks = []
+    router.setUserVolume(0.75, source: .app)
+    Thread.sleep(forTimeInterval: 0.5)
+    rec = runTimed(seconds: 6.5, generator: tone) {
         Thread.sleep(forTimeInterval: 1.0)
         var v: Float = 0.75
         for k in 0..<16 {
@@ -518,9 +554,10 @@ do {
             Thread.sleep(forTimeInterval: 0.25)
         }
     }
+    return rec.samples
+    }
     let x = rec.samples
     guard let onset = x.firstIndex(where: { abs($0) > 1e-4 }) else { fail("fase 6a: registrazione silenziosa") }
-    let res = relativeResidueDb(x[(onset + 4800)...], periodSamples: 240)
     // Livello a fine tacca rispetto al livello iniziale (attesi -4 dB per tacca con la curva di BlackHole 16ch).
     let env = toneEnvelope(x, f: toneF)
     let refIdx = rec.index(atNs: marks[0].ns).map { $0 - 4800 } ?? onset + 24000
@@ -539,18 +576,18 @@ do {
     if worstLevel > 0.3 { print("FALLITO: livello diverso dalla curva del volume"); failures += 1 }
 
     // 6b) Ripetizione rapida (una tacca ogni 30 ms, la velocità massima di ripetizione dei tasti).
-    let rec2 = runTimed(seconds: 3.5, generator: tone) {
-        Thread.sleep(forTimeInterval: 0.8)
-        var v: Float = 0.75
-        for k in 0..<16 {
-            v += (k < 8 ? -1 : 1) / 16
-            router.setUserVolume(v, source: .keys)
-            sampleHw()
-            Thread.sleep(forTimeInterval: 0.03)
-        }
+    let res2 = residueWithRetry("6b") {
+        runTimed(seconds: 3.5, generator: tone) {
+            Thread.sleep(forTimeInterval: 0.8)
+            var v: Float = 0.75
+            for k in 0..<16 {
+                v += (k < 8 ? -1 : 1) / 16
+                router.setUserVolume(v, source: .keys)
+                sampleHw()
+                Thread.sleep(forTimeInterval: 0.03)
+            }
+        }.samples
     }
-    guard let on2 = rec2.samples.firstIndex(where: { abs($0) > 1e-4 }) else { fail("fase 6b: registrazione silenziosa") }
-    let res2 = relativeResidueDb(rec2.samples[(on2 + 4800)...], periodSamples: 240)
     print(String(format: "  6b) ripetizione rapida (una tacca ogni 30 ms): residuo %.1f dB", res2))
     if res2 > -60 { print("FALLITO: click con ripetizione rapida (soglia -60 dB)"); failures += 1 }
 
@@ -614,13 +651,19 @@ do {
     Thread.sleep(forTimeInterval: 0.6)
     router.setUserVolume(0.25, source: .keys)
     Thread.sleep(forTimeInterval: 0.8) // micro-passi in corso
+    // Trascinamento nel Centro di Controllo: una serie di scritture ravvicinate che finisce a 0,625.
+    for k in 0..<8 {
+        CA.setVolumeScalar(loopback.id, scope: .output, 0.59 + Float(k) * 0.005)
+        Thread.sleep(forTimeInterval: 0.03)
+    }
     CA.setVolumeScalar(loopback.id, scope: .output, 0.625)
     Thread.sleep(forTimeInterval: 0.5)
     let bhAfter = CA.volumeScalar(loopback.id, scope: .output) ?? -1
     let hwAfter = CA.volumeScalar(fakeOutput.id, scope: .output) ?? -1
     while tonePlaying { Thread.sleep(forTimeInterval: 0.1) }
     if abs(bhAfter - 0.625) > 0.001 { print(String(format: "FALLITO: il volume di macOS impostato dall'esterno è stato sovrascritto (%.4f)", bhAfter)); failures += 1 }
-    print(String(format: "  6e) cambio esterno a 0.625: volume utente %.3f, volume hardware uscita %.3f", router.userVolume, hwAfter))
+    print(String(format: "  6e) trascinamento esterno fino a 0.625 durante l'allineamento: volume utente %.3f, volume di macOS %.4f, volume hardware uscita %.3f",
+                 router.userVolume, bhAfter, hwAfter))
     if abs(router.userVolume - 0.625) > 0.001 { print("FALLITO: cambio di volume esterno non recepito"); failures += 1 }
     if abs(hwAfter - 1) > 0.001 { print("FALLITO: il cambio esterno ha modificato il volume hardware"); failures += 1 }
     // 6f) Senza audio l'indicatore di macOS si allinea subito (nessun gradino udibile possibile).
@@ -743,16 +786,16 @@ do {
     router.setUserVolume(0.75, source: .app)
     Thread.sleep(forTimeInterval: 0.5)
     let toneF = 200.0
-    let rec = runTimed(seconds: 3.5, generator: { i in 0.25 * Float(sin(2 * Double.pi * toneF * Double(i) / sampleRate)) }) {
-        Thread.sleep(forTimeInterval: 0.8)
-        for k in 0..<24 { _ = router.handleKey(k % 3 == 2 ? .up : .down, fine: false); Thread.sleep(forTimeInterval: 0.04) }
+    let r7 = residueWithRetry("7h") {
+        router.setUserVolume(0.75, source: .app)
+        Thread.sleep(forTimeInterval: 0.4)
+        return runTimed(seconds: 3.5, generator: { i in 0.25 * Float(sin(2 * Double.pi * toneF * Double(i) / sampleRate)) }) {
+            Thread.sleep(forTimeInterval: 0.8)
+            for k in 0..<24 { _ = router.handleKey(k % 3 == 2 ? .up : .down, fine: false); Thread.sleep(forTimeInterval: 0.04) }
+        }.samples
     }
-    let pk = rec.samples.map { abs($0) }.max() ?? 0
-    if pk > 1e-3, let on = rec.samples.firstIndex(where: { abs($0) > pk * 0.5 }) {
-        let r = relativeResidueDb(rec.samples[(on + 4800)...], periodSamples: 240)
-        print(String(format: "  7h) 24 pressioni miste ogni 40 ms durante la riproduzione: residuo %.1f dB", r))
-        if r > -60 { print("FALLITO: click durante le pressioni (soglia -60 dB)"); failures += 1 }
-    } else { print("FALLITO: 7h registrazione silenziosa"); failures += 1 }
+    print(String(format: "  7h) 24 pressioni miste ogni 40 ms durante la riproduzione: residuo %.1f dB", r7))
+    if r7 > -60 { print("FALLITO: click durante le pressioni (soglia -60 dB)"); failures += 1 }
 
     // 7i) Nessun listener duplicato dopo riavvii del motore; nessuno a motore spento.
     let listeners0 = router.volumeListenerCount

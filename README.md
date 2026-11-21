@@ -161,6 +161,10 @@ personali, l'ultimo profilo, la curva, il volume e il dispositivo. Tutto viene r
     tre gradini non sincronizzati per tacca (misurato: impulso di 4 dB, residuo −16,5 dB).
   - Senza il permesso Accessibilità, o cambiando il volume dal Centro di Controllo, il volume
     di BlackHole cambia ancora a gradino: lì un piccolo click resta possibile (lo produce il driver).
+  - Il volume di macOS si allinea subito se non c'è audio; con l'audio presente a micro-passi
+    (~1–2 s per tacca). In quel breve intervallo, un singolo clic sul cursore del Centro di Controllo
+    che cade esattamente durante una scrittura (~2 ms) può essere sovrascritto (Core Audio non ha
+    un'operazione atomica "confronta e scrivi"); un trascinamento viene sempre recepito.
 - **Funzionamento in background**: chiudere la finestra (pulsante rosso o ⌘W) **non** ferma l'audio:
   l'app sparisce dal Dock e resta solo l'icona nella barra dei menu. Per chiuderla davvero usare
   "Esci da Armonia EQ" (pannello) o ⌘Q (finestra aperta): l'uscita audio di sistema viene ripristinata.
