@@ -464,6 +464,7 @@ func broadbandResidue(_ x: ArraySlice<Float>, hp: Double) -> Double {
 
 /// Residuo a banda larga (passa-alto 4° ordine a 2,5 kHz) rispetto al livello EFFETTIVO del tono
 /// (picco sull'ultimo periodo): una rampa di volume non è un click, un gradino sì.
+var lastResidueAt = 0.0
 func relativeResidueDb(_ x: ArraySlice<Float>, periodSamples: Int) -> Double {
     func biquadHP(_ input: [Double], q: Double) -> [Double] {
         let w0 = 2 * Double.pi * 2500 / sampleRate, cw = cos(w0), alpha = sin(w0) / (2 * q)
@@ -478,12 +479,13 @@ func relativeResidueDb(_ x: ArraySlice<Float>, periodSamples: Int) -> Double {
     }
     let xs = x.map(Double.init)
     let y = biquadHP(biquadHP(xs, q: 0.5412), q: 1.3066)
-    var worst = 0.0
+    var worst = 0.0, at = 0
     var pk = 0.0
     for i in xs.indices {
         if i % periodSamples == 0 { pk = 0; for k in max(0, i - periodSamples)..<i { pk = max(pk, abs(xs[k])) } }
-        if i > 1000, pk > 1e-6 { worst = max(worst, abs(y[i]) / pk) }
+        if i > 1000, pk > 1e-6, abs(y[i]) / pk > worst { worst = abs(y[i]) / pk; at = i }
     }
+    lastResidueAt = Double(at) / sampleRate
     return 20 * log10(max(worst, 1e-12))
 }
 
@@ -652,15 +654,23 @@ do {
     router.setUserVolume(0.25, source: .keys)
     Thread.sleep(forTimeInterval: 0.8) // micro-passi in corso
     // Trascinamento nel Centro di Controllo: una serie di scritture ravvicinate che finisce a 0,625.
+    router.log = { print("      [router] \($0)") }
+    let st6e = router.walkerSteps, ex6e = router.externalVolumeChanges
+    var readBack: [String] = []
     for k in 0..<8 {
-        CA.setVolumeScalar(loopback.id, scope: .output, 0.59 + Float(k) * 0.005)
+        let w = 0.59 + Float(k) * 0.005
+        let ok = CA.setVolumeScalar(loopback.id, scope: .output, w)
+        readBack.append(String(format: "%.4f%@→%.4f", w, ok ? "" : "(errore)", CA.volumeScalar(loopback.id, scope: .output) ?? -1))
         Thread.sleep(forTimeInterval: 0.03)
     }
+    print("      scritture esterne e rilettura: \(readBack.joined(separator: " "))")
+    print("      durante il trascinamento: micro-passi \(router.walkerSteps - st6e), cambi esterni rilevati \(router.externalVolumeChanges - ex6e), utente \(router.userVolume)")
     CA.setVolumeScalar(loopback.id, scope: .output, 0.625)
     Thread.sleep(forTimeInterval: 0.5)
     let bhAfter = CA.volumeScalar(loopback.id, scope: .output) ?? -1
     let hwAfter = CA.volumeScalar(fakeOutput.id, scope: .output) ?? -1
     while tonePlaying { Thread.sleep(forTimeInterval: 0.1) }
+    router.log = nil
     if abs(bhAfter - 0.625) > 0.001 { print(String(format: "FALLITO: il volume di macOS impostato dall'esterno è stato sovrascritto (%.4f)", bhAfter)); failures += 1 }
     print(String(format: "  6e) trascinamento esterno fino a 0.625 durante l'allineamento: volume utente %.3f, volume di macOS %.4f, volume hardware uscita %.3f",
                  router.userVolume, bhAfter, hwAfter))
@@ -786,6 +796,7 @@ do {
     router.setUserVolume(0.75, source: .app)
     Thread.sleep(forTimeInterval: 0.5)
     let toneF = 200.0
+    let steps7 = router.walkerSteps, jumps7 = router.walkerJumps
     let r7 = residueWithRetry("7h") {
         router.setUserVolume(0.75, source: .app)
         Thread.sleep(forTimeInterval: 0.4)
@@ -794,7 +805,8 @@ do {
             for k in 0..<24 { _ = router.handleKey(k % 3 == 2 ? .up : .down, fine: false); Thread.sleep(forTimeInterval: 0.04) }
         }.samples
     }
-    print(String(format: "  7h) 24 pressioni miste ogni 40 ms durante la riproduzione: residuo %.1f dB", r7))
+    print(String(format: "  7h) 24 pressioni miste ogni 40 ms durante la riproduzione: residuo %.1f dB (massimo a %.3f s dall'inizio della misura; micro-passi %d, allineamenti istantanei %d)",
+                 r7, lastResidueAt, router.walkerSteps - steps7, router.walkerJumps - jumps7))
     if r7 > -60 { print("FALLITO: click durante le pressioni (soglia -60 dB)"); failures += 1 }
 
     // 7i) Nessun listener duplicato dopo riavvii del motore; nessuno a motore spento.
