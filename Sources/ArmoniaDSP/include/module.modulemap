@@ -1,0 +1,5 @@
+module ArmoniaDSP {
+    header "ArmoniaDSP.h"
+    header "ArmoniaRender.h"
+    export *
+}
