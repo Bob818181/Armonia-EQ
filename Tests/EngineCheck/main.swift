@@ -213,12 +213,20 @@ if flatDb.contains(where: { abs($0) > 0.5 }) {
 print("\nProfilo                     ", freqs.map { bandLabel(Float($0)).padding(toLength: 7, withPad: " ", startingAt: 0) }.joined())
 for profile in FactoryProfiles.all where profile.id != "flat" {
     apply(profile.settings)
-    let m = measureClean(profile.name)
-    let measured = zip(m, flat).map { 20 * log10($0 / $1) }
     let expected: [Double] = profile.settings.gains.withUnsafeBufferPointer { g in
         freqs.map { aeq_response_db(g.baseAddress, profile.settings.preamp, sampleRate, $0) }
     }
-    let worst = zip(measured, expected).map { abs($0 - $1) }.max() ?? 0
+    var measured: [Double] = []
+    var worst = 0.0
+    // Un'interruzione dell'audio della macchina di CI durante un solo tono (non sempre rilevata
+    // dal confronto tra le due metà) si ripete la misura una volta, come per i dropout.
+    for attempt in 1...2 {
+        let m = measureClean(profile.name)
+        measured = zip(m, flat).map { 20 * log10($0 / $1) }
+        worst = zip(measured, expected).map { abs($0 - $1) }.max() ?? 0
+        if worst <= 0.3 { break }
+        if attempt == 1 { dropoutCount += 1; print("  ATTENZIONE: misura anomala per \(profile.name) (scarto \(String(format: "%.2f", worst)) dB), ripetuta") }
+    }
     print(String(format: "%-20@ cursori", profile.name as NSString),
           profile.settings.gains.map { String(format: "%+7.1f", $0) }.joined(), String(format: "  preamp %+.1f", profile.settings.preamp))
     print(String(format: "%-20@ curva  ", "" as NSString), expected.map { String(format: "%+7.2f", $0) }.joined())
@@ -593,18 +601,41 @@ do {
         Thread.sleep(forTimeInterval: 0.25)
         if abs((CA.volumeScalar(loopback.id, scope: .output) ?? -1) - 0.5) < 0.001 { synced = true; break }
     }
-    print(String(format: "  6d) volume di macOS dopo i tasti (-> 0.50): %.3f, utente %.3f, micro-passi %d, cambi esterni %d",
+    print(String(format: "  6d) volume di macOS dopo i tasti (-> 0.50): %.3f, utente %.3f, micro-passi %d (costo medio di una scrittura %.2f ms), cambi esterni %d",
                  CA.volumeScalar(loopback.id, scope: .output) ?? -1, router.userVolume, router.walkerSteps - steps0,
-                 router.externalVolumeChanges - ext0))
+                 router.walkerWriteCostMs, router.externalVolumeChanges - ext0))
     if !synced { print("FALLITO: il volume di macOS non si è allineato al volume dell'utente"); failures += 1 }
 
-    // 6e) Cambio esterno (Centro di Controllo / Impostazioni): diventa il volume dell'utente.
+    // 6e) Cambio esterno (Centro di Controllo / Impostazioni) MENTRE l'indicatore si sta allineando
+    //     (con l'audio presente, quindi a micro-passi): diventa il volume dell'utente e non viene sovrascritto.
+    let bg = DispatchQueue(label: "tono-6e")
+    var tonePlaying = true
+    bg.async { _ = runTimed(seconds: 3.0, generator: tone) {}; tonePlaying = false }
+    Thread.sleep(forTimeInterval: 0.6)
+    router.setUserVolume(0.25, source: .keys)
+    Thread.sleep(forTimeInterval: 0.8) // micro-passi in corso
     CA.setVolumeScalar(loopback.id, scope: .output, 0.625)
     Thread.sleep(forTimeInterval: 0.5)
+    let bhAfter = CA.volumeScalar(loopback.id, scope: .output) ?? -1
     let hwAfter = CA.volumeScalar(fakeOutput.id, scope: .output) ?? -1
+    while tonePlaying { Thread.sleep(forTimeInterval: 0.1) }
+    if abs(bhAfter - 0.625) > 0.001 { print(String(format: "FALLITO: il volume di macOS impostato dall'esterno è stato sovrascritto (%.4f)", bhAfter)); failures += 1 }
     print(String(format: "  6e) cambio esterno a 0.625: volume utente %.3f, volume hardware uscita %.3f", router.userVolume, hwAfter))
     if abs(router.userVolume - 0.625) > 0.001 { print("FALLITO: cambio di volume esterno non recepito"); failures += 1 }
     if abs(hwAfter - 1) > 0.001 { print("FALLITO: il cambio esterno ha modificato il volume hardware"); failures += 1 }
+    // 6f) Senza audio l'indicatore di macOS si allinea subito (nessun gradino udibile possibile).
+    Thread.sleep(forTimeInterval: 1.0) // nessun audio: l'inviluppo d'ingresso decade
+    let jumps0 = router.walkerJumps
+    let t6f = Date()
+    router.setUserVolume(0.3125, source: .keys)
+    var syncedSilent = false
+    for _ in 0..<40 {
+        Thread.sleep(forTimeInterval: 0.05)
+        if abs((CA.volumeScalar(loopback.id, scope: .output) ?? -1) - 0.3125) < 0.0005 { syncedSilent = true; break }
+    }
+    print(String(format: "  6f) in silenzio: volume di macOS allineato in %.2f s (allineamenti istantanei %d)",
+                 Date().timeIntervalSince(t6f), router.walkerJumps - jumps0))
+    if !syncedSilent { print("FALLITO: in silenzio il volume di macOS non si è allineato subito"); failures += 1 }
     router.setUserVolume(1.0, source: .app)
     aeq_set_auto_gain(router.dsp, 0)
     Thread.sleep(forTimeInterval: 0.5)

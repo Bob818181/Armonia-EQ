@@ -405,6 +405,9 @@ final class AudioRouter {
     var lastAppliedGain: Float32 { locked { _lastAppliedGain } }
     var walkerSteps: Int { displayQueue.sync { _walkerSteps } }
     var externalVolumeChanges: Int { displayQueue.sync { _externalChanges } }
+    /// Diagnostica: allineamenti istantanei in silenzio e costo medio di una scrittura del volume (ms).
+    var walkerJumps: Int { displayQueue.sync { _walkerJumps } }
+    var walkerWriteCostMs: Double { displayQueue.sync { _walkerSteps > 0 ? _setTimeNs / Double(_walkerSteps + _walkerJumps) / 1e6 : 0 } }
     var volumeListenerCount: Int { volumeListeners.count }
     /// Chiamato sul main thread quando il volume dell'utente cambia. `fromKeys`: almeno un tasto volume
     /// dall'ultima notifica (l'app mostra l'HUD). Il valore è sempre quello più recente.
@@ -502,7 +505,9 @@ final class AudioRouter {
 
     // MARK: Volume di macOS (BlackHole): micro-passi e cambi esterni, solo su displayQueue
 
-    private let displayQueue = DispatchQueue(label: "it.armoniaeq.volume-macos", qos: .utility)
+    // Priorità alta: con QoS "utility" macOS raggruppa i timer e i micro-passi rallentano (misurato
+    // in CI: ~12 ms per passo invece di 1,5 ms). Il lavoro per passo è minimo (una scrittura).
+    private let displayQueue = DispatchQueue(label: "it.armoniaeq.volume-macos", qos: .userInteractive)
     private var displayCurrent: Float32 = 1   // ultimo valore scritto da noi su BlackHole
     private var displayTarget: Float32 = 1
     private var displayStepScalar: Float32 = 0.005 / 64
@@ -511,6 +516,8 @@ final class AudioRouter {
     private var walker: DispatchSourceTimer?
     private var walkerStart: DispatchWorkItem?
     private var _walkerSteps = 0
+    private var _walkerJumps = 0
+    private var _setTimeNs: Double = 0
     private var _externalChanges = 0
     /// Curva del volume del loopback (dB a 65 posizioni, misurata all'avvio a guadagno zero) e indirizzi
     /// della proprietà volume: ogni micro-passo costa una sola scrittura a Core Audio.
@@ -551,14 +558,31 @@ final class AudioRouter {
             walker = nil
             return
         }
-        let step = min(abs(diff), displayStepScalar)
-        displayCurrent += diff > 0 ? step : -step
+        // Prima di scrivere: se qualcuno ha cambiato il volume di macOS (Centro di Controllo,
+        // Impostazioni…) mentre ci stavamo allineando, quel valore vince e non va sovrascritto.
+        if let addr = loopVolumeAddrs.first, let now = CA.getValue(loop, addr, default: Float32(0)),
+           abs(now - displayCurrent) > max(1e-5, 1.5 * displayStepScalar) {
+            acceptExternalChange(volume: now, muted: CA.isMuted(loop, scope: .output) ?? expectedMute)
+            return
+        }
+        // In silenzio (nessun audio in ingresso da ~0,5 s) un gradino non è udibile: allineamento
+        // immediato. Con l'audio presente: micro-passi da 0,005 dB.
+        let silent = aeq_input_envelope(dsp) < 1e-4
+        if silent {
+            displayCurrent = displayTarget
+            _walkerJumps += 1
+        } else {
+            let step = min(abs(diff), displayStepScalar)
+            displayCurrent += diff > 0 ? step : -step
+            _walkerSteps += 1
+        }
         var value = displayCurrent
+        let t0 = DispatchTime.now().uptimeNanoseconds
         for addr in loopVolumeAddrs {
             var a = addr
             AudioObjectSetPropertyData(loop, &a, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
         }
-        _walkerSteps += 1
+        _setTimeNs += Double(DispatchTime.now().uptimeNanoseconds - t0)
         // Compensazione dalla curva misurata (nessuna lettura da Core Audio); senza curva, lettura diretta.
         if let g = loopGain(displayCurrent), !expectedMute {
             aeq_set_input_gain(dsp, g > 1e-6 ? 1 / g : 1)
@@ -606,9 +630,18 @@ final class AudioRouter {
         var current: Float32?
         if let addr = loopVolumeAddrs.first { current = CA.getValue(loopID, addr, default: Float32(0)) }
         let muted = CA.isMuted(loopID, scope: .output) ?? false
-        var volumeChanged = false
         // Tolleranza: 1,5 micro-passi (un driver può arrotondare il valore impostato).
-        if let v = current, abs(v - displayCurrent) > max(1e-5, 1.5 * displayStepScalar) {
+        let volumeChanged = current.map { abs($0 - displayCurrent) > max(1e-5, 1.5 * displayStepScalar) } ?? false
+        if volumeChanged || muted != expectedMute || current == nil {
+            acceptExternalChange(volume: volumeChanged ? current : nil, muted: muted)
+        }
+    }
+
+    /// Cambio esterno del volume di macOS (Centro di Controllo, Impostazioni, tasti non intercettati):
+    /// diventa il volume dell'utente; i micro-passi in corso si fermano (solo su displayQueue).
+    private func acceptExternalChange(volume v: Float32?, muted: Bool) {
+        let loopID = displayLoopback
+        if let v = v {
             _externalChanges += 1
             log?(String(format: "volume di sistema cambiato dall'esterno: %.4f (indicatore %.4f)", v, displayCurrent))
             displayCurrent = v
@@ -616,14 +649,11 @@ final class AudioRouter {
             walker?.cancel()
             walker = nil
             walkerStart?.cancel()
-            volumeChanged = true
         }
-        let muteChanged = muted != expectedMute
         expectedMute = muted
-        guard volumeChanged || muteChanged || current == nil else { return }
-        updateCompensation(loopID) // cambio esterno: guadagno letto direttamente dal driver
+        updateCompensation(loopID) // guadagno letto direttamente dal driver
         stateLock.lock()
-        if volumeChanged, let v = current { _userVolume = v }
+        if let v = v { _userVolume = v }
         _externalMute = muted
         applyDSPLocked()
         scheduleNotifyLocked(.system)

@@ -105,6 +105,7 @@ struct AEQEngine {
     // Misure
     _Atomic float peak[2];
     _Atomic float inputPeak;
+    _Atomic float inputEnvelope; // livello d'ingresso recente (decade di 60 dB in 0,5 s), non azzerato dalla lettura
     _Atomic float minLimiterGain;
     _Atomic float peakHold;
     _Atomic float preLimiterPeakHold;
@@ -730,6 +731,11 @@ void aeq_process(AEQEngine *e, float *left, float *right, uint32_t frames) {
     if (blockInPeak > atomic_load_explicit(&e->inputPeak, memory_order_relaxed))
         atomic_store_explicit(&e->inputPeak, blockInPeak, memory_order_relaxed);
     {
+        const float decay = powf(10.0f, -6.0f * (float)frames / (float)e->sampleRate);
+        const float env = atomic_load_explicit(&e->inputEnvelope, memory_order_relaxed) * decay;
+        atomic_store_explicit(&e->inputEnvelope, fmaxf(env, blockInPeak), memory_order_relaxed);
+    }
+    {
         const float blockPeak = fmaxf(blockPeakL, blockPeakR);
         if (blockPeak > atomic_load_explicit(&e->peakHold, memory_order_relaxed))
             atomic_store_explicit(&e->peakHold, blockPeak, memory_order_relaxed);
@@ -766,6 +772,10 @@ void aeq_reset_meters(AEQEngine *e) {
 
 float aeq_read_input_peak(AEQEngine *e) {
     return e ? atomic_exchange(&e->inputPeak, 0.0f) : 0.0f;
+}
+
+float aeq_input_envelope(AEQEngine *e) {
+    return e ? atomic_load_explicit(&e->inputEnvelope, memory_order_relaxed) : 0.0f;
 }
 
 float aeq_read_gain_reduction_db(AEQEngine *e) {

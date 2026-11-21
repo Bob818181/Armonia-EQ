@@ -104,6 +104,9 @@ void aeq_get_meters(AEQEngine *engine, AEQMeters *meters);
 void aeq_reset_meters(AEQEngine *engine);
 /// Picco in ingresso (dopo la compensazione, prima di preamp/EQ) dall'ultima lettura. Azzera il valore.
 float aeq_read_input_peak(AEQEngine *engine);
+/// Livello d'ingresso recente (lineare, dopo la compensazione): picco che decade di 60 dB in 0,5 s.
+/// Non viene azzerato dalla lettura (serve a sapere se in questo momento c'è audio).
+float aeq_input_envelope(AEQEngine *engine);
 /// Massima riduzione di guadagno del limiter dall'ultima lettura (dB, >= 0). Azzera il valore.
 float aeq_read_gain_reduction_db(AEQEngine *engine);
 /// Copia gli ultimi `count` campioni mono (post-elaborazione) per l'analizzatore di spettro.
