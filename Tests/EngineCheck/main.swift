@@ -852,6 +852,11 @@ if restored != fakeOutput.id { print("FALLITO: uscita di sistema non ripristinat
 if let builtIn = CA.allDevices().first(where: { $0.isSelectableOutput }) {
     print("\nFase 2: uscita \(builtIn.name) (\(builtIn.transportLabel))")
     apply(.flat)
+    // Il volume dell'utente è quello del dispositivo prima dell'avvio: per misurare il livello a
+    // guadagno unitario lo si porta al 100 % (come fa la fase 4 per l'uscita di prova).
+    let found = CA.volumeScalar(builtIn.id, scope: .output)
+    if CA.hasSettableVolume(builtIn.id, scope: .output) { CA.setVolumeScalar(builtIn.id, scope: .output, 1) }
+    print("  volume del dispositivo trovato: \(found.map { String(format: "%.3f", $0) } ?? "nessun controllo") -> 1.000 per la misura")
     do {
         try router.start(output: builtIn, loopback: loopback)
         _ = aeq_read_peak(router.dsp, 0)
