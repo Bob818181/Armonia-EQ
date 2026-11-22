@@ -317,8 +317,18 @@ do {
         expect(abs(macRightAfter - mac0) <= 1, "pressione singola: macOS non ha elaborato il tasto (volume di macOS \(mac0) -> \(macRightAfter) subito dopo)")
         Thread.sleep(forTimeInterval: 0.2)
         if let s1 = single.first, let h = lastHud(readLog()) {
-            expect(abs(h - s1.v) < 0.0002, "HUD coerente con il volume effettivo (\(h) = \(s1.v))")
-        } else { expect(false, "HUD non mostrato dopo la pressione") }
+            expect(abs(h - s1.v) < 0.0002, "indicatore coerente con il volume effettivo (\(h) = \(s1.v))")
+        } else { expect(false, "indicatore non mostrato dopo la pressione") }
+        expect(readLog().contains("(indicatore di macOS)") && !readLog().contains("indicatore di macOS non disponibile"),
+               "compare l'indicatore originale di macOS (non quello verde di Armonia)")
+        // Schermata con l'indicatore visibile, per la documentazione.
+        volumeKey(0, gap: 0.0)
+        Thread.sleep(forTimeInterval: 0.35)
+        let sc = Process()
+        sc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        sc.arguments = ["-x", (CommandLine.arguments[1] as NSString).deletingLastPathComponent + "/osd.png"]
+        try? sc.run(); sc.waitUntilExit()
+        Thread.sleep(forTimeInterval: 0.3)
 
         // Pressioni rapide (8 a 15 ms), prolungata (ripetizione automatica), alternanza.
         let base = keyLines(readLog()).last?.v ?? 0.5

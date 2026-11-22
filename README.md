@@ -146,8 +146,9 @@ personali, l'ultimo profilo, la curva, il volume e il dispositivo. Tutto viene r
     dispositivo (misurata all'avvio, in silenzio): ogni tacca suona come prima.
   - Tasti fisici, volume di macOS (Centro di Controllo) e cursore Volume dell'app restano
     sincronizzati; l'indicatore di macOS si allinea a micro-passi inudibili (0,005 dB).
-  - Tacche come macOS (1/16, con ⌥⇧ 1/64), tasto muto (con dissolvenza), indicatore a schermo.
-    Quando l'app gestisce un tasto, macOS non lo riceve: compare solo l'indicatore di Armonia EQ.
+  - Tacche come macOS (1/16, con ⌥⇧ 1/64), tasto muto (con dissolvenza). Compare l'indicatore
+    originale di macOS (richiesto da Armonia al servizio di sistema OSDUIHelper con il nuovo valore):
+    il tasto non arriva a macOS, che altrimenti cambierebbe il volume di BlackHole a gradino.
   - Gestione degli eventi: l'event tap gira su un thread dedicato (non sul main thread, che può
     essere occupato dall'interfaccia: macOS disattiverebbe il tap e passerebbe il tasto a sé stesso);
     ogni tasto aggiorna subito, sotto lock, lo stato autoritativo del volume e il guadagno del DSP;
@@ -155,7 +156,7 @@ personali, l'ultimo profilo, la curva, il volume e il dispositivo. Tutto viene r
     di macOS e i listener di BlackHole lavorano su una coda separata e non rallentano i tasti.
   - Il muto è applicato dal DSP (dissolvenza in ingresso e in uscita, senza attese); il mute di
     BlackHole non viene toccato, quindi l'icona del volume di macOS non mostra il muto: lo mostra
-    l'indicatore di Armonia EQ.
+    l'indicatore del volume.
   - Causa del vecchio click: macOS cambiava il volume di BlackHole, che lo applica a gradino ai
     campioni; la compensazione arrivava 8–25 ms dopo e il volume veniva poi copiato sull'hardware:
     tre gradini non sincronizzati per tacca (misurato: impulso di 4 dB, residuo −16,5 dB).

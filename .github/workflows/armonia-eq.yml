@@ -194,6 +194,10 @@ jobs:
           osascript -e 'quit app "ArmoniaEQ"' || pkill -f "ArmoniaEQ.app/Contents/MacOS/ArmoniaEQ" || true
           sleep 1
           grep "ArmoniaEQ ui:" build/ui.log | sed 's/.*ArmoniaEQ ui: //' | tail -25 || true
+          if [ -f build/osd.png ]; then
+            sips -s format jpeg -s formatOptions 70 --resampleWidth 1400 build/osd.png --out docs/osd.jpg >/dev/null || true
+            git add docs/osd.jpg || true
+          fi
           if [ -f build/panel.png ]; then
             sips -s format jpeg -s formatOptions 80 build/panel.png --out docs/menubar.jpg >/dev/null || true
             git config user.name "github-actions[bot]"
