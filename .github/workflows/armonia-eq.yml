@@ -186,6 +186,10 @@ jobs:
             sudo sqlite3 "$DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('kTCCServiceAccessibility', 'it.armoniaeq.app', 0, 2, 4, 1, 0, $(date +%s));" || true
             sudo sqlite3 "$DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('kTCCServiceAccessibility', '$APPBIN', 1, 2, 4, 1, 0, $(date +%s));" || true
           done
+          # Sonda dell'indicatore del volume di macOS (parametri di riempimento), prima del test.
+          swiftc -O -target $(uname -m)-apple-macos12.0 Tests/OSDProbe/main.swift -o build/osd_probe && build/osd_probe "$PWD/build" || true
+          mkdir -p docs/osd-probe
+          for f in build/osd-*.png; do [ -f "$f" ] && sips -s format jpeg -s formatOptions 60 --resampleWidth 900 "$f" --out "docs/osd-probe/$(basename "${f%.png}").jpg" >/dev/null; done
           rm -f build/ui.log
           open -W --env ARMONIA_DEBUG=1 build/ArmoniaEQ.app --stdout "$PWD/build/ui.log" --stderr "$PWD/build/ui.log" &
           sleep 6
@@ -196,7 +200,7 @@ jobs:
           grep "ArmoniaEQ ui:" build/ui.log | sed 's/.*ArmoniaEQ ui: //' | tail -25 || true
           if [ -f build/osd.png ]; then
             sips -s format jpeg -s formatOptions 70 --resampleWidth 1400 build/osd.png --out docs/osd.jpg >/dev/null || true
-            git add docs/osd.jpg || true
+            git add docs/osd.jpg docs/osd-probe || true
           fi
           if [ -f build/panel.png ]; then
             sips -s format jpeg -s formatOptions 80 build/panel.png --out docs/menubar.jpg >/dev/null || true

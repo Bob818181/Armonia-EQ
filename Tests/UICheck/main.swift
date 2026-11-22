@@ -314,7 +314,10 @@ do {
         var o = String(readLog().dropFirst(before))
         let single = keyLines(o)
         expect(single.count == 1, "pressione singola: una sola tacca (\(single.count))")
-        expect(abs(macRightAfter - mac0) <= 1, "pressione singola: macOS non ha elaborato il tasto (volume di macOS \(mac0) -> \(macRightAfter) subito dopo)")
+        // Se macOS avesse elaborato il tasto, il router registrerebbe un cambio di volume esterno.
+        // (Il valore letto con osascript può già essere quello allineato da Armonia: in silenzio
+        // l'allineamento è immediato dopo 0,3 s e osascript a volte impiega di più.)
+        expect(!o.contains("cambiato dall'esterno"), "pressione singola: macOS non ha elaborato il tasto (volume di macOS \(mac0) -> \(macRightAfter), nessun cambio esterno)")
         Thread.sleep(forTimeInterval: 0.2)
         if let s1 = single.first, let h = lastHud(readLog()) {
             expect(abs(h - s1.v) < 0.0002, "indicatore coerente con il volume effettivo (\(h) = \(s1.v))")
