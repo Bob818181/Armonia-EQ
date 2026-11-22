@@ -284,7 +284,7 @@ struct ContentView: View {
                                                   set: { model.selectOutput(uid: $0) })) {
                         if model.outputDevices.isEmpty { Text("Nessun dispositivo").tag("") }
                         ForEach(model.outputDevices) { d in
-                            Text("\(d.name)  ·  \(d.transportLabel)").tag(d.uid)
+                            Text("\(d.displayName)  ·  \(d.transportLabel)\(d.isAppleDriver ? "" : " · driver software")").tag(d.uid)
                         }
                     }
                     .labelsHidden()
@@ -466,6 +466,7 @@ struct ContentView: View {
                     Text("Tasti volume → \(info.outputName)")
                 }
                 Text("Buffer \(info.bufferFrames)")
+                    .help("Uscita in uso: \(info.outputDetail)")
             }
         }
         .font(.system(size: 10))

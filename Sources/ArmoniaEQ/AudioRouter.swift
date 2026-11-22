@@ -26,6 +26,16 @@ final class AudioRouter {
         let latencyMs: Double
         /// true: i tasti volume di macOS regolano il volume hardware del dispositivo di uscita.
         var hardwareVolume = false
+        /// Dispositivo reale che riceve l'audio (UID Core Audio) e descrizione per l'interfaccia.
+        var outputUID = ""
+        var outputDetail = ""
+    }
+
+    /// UID dei sotto-dispositivi attivi dell'aggregate in uso (uscita reale + loopback). Vuoto a motore spento.
+    var activeSubdeviceUIDs: [String] {
+        guard aggregateID != 0 else { return [] }
+        return CA.getArray(aggregateID, CA.address(kAudioAggregateDevicePropertyActiveSubDeviceList),
+                           of: AudioObjectID.self, zero: 0).compactMap { CA.getString($0, kAudioDevicePropertyDeviceUID) }
     }
 
     let dsp: OpaquePointer
@@ -193,6 +203,12 @@ final class AudioRouter {
         guard aggIn >= outputIn + loopIn, aggOut >= outputOut else {
             throw CoreAudioError("Il dispositivo aggregato non è pronto (ingressi \(aggIn), uscite \(aggOut))")
         }
+        // L'aggregate deve contenere ESATTAMENTE il dispositivo reale scelto (driver nativo) e il loopback:
+        // l'audio va direttamente al dispositivo selezionato, nessun altro dispositivo lo riceve.
+        let subs = activeSubdeviceUIDs
+        guard subs.count == 2, subs.contains(output.uid), subs.contains(loopback.uid) else {
+            throw CoreAudioError("Composizione del dispositivo aggregato inattesa: \(subs)")
+        }
         if abs((CA.nominalSampleRate(agg) ?? sampleRate) - sampleRate) > 0.5 {
             CA.setNominalSampleRate(agg, sampleRate)
         }
@@ -268,9 +284,12 @@ final class AudioRouter {
         let latencyFrames = Double(frames) * 2
             + Double(CA.latencyFrames(output.id, scope: .output))
             + Double(CA.latencyFrames(loopback.id, scope: .input))
-        running = RunningInfo(outputName: output.name, sampleRate: sampleRate, bufferFrames: frames,
+        let fresh = CA.device(output.id) ?? output
+        running = RunningInfo(outputName: fresh.displayName, sampleRate: sampleRate, bufferFrames: frames,
                               latencyMs: latencyFrames / sampleRate * 1000,
-                              hardwareVolume: CA.hasSettableVolume(output.id, scope: .output))
+                              hardwareVolume: CA.hasSettableVolume(output.id, scope: .output),
+                              outputUID: output.uid,
+                              outputDetail: "\(fresh.displayName) · \(fresh.transportLabel) · \(fresh.driverLabel) · UID \(output.uid)")
     }
 
     // MARK: Arresto

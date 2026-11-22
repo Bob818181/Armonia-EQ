@@ -846,6 +846,73 @@ do {
     print("FALLITO: fase 7: \(error.localizedDescription)"); failures += 1
 }
 
+// MARK: Fase 8 – identificazione dei dispositivi e cambio di uscita durante la riproduzione
+print("\nFase 8: dispositivi di uscita – identificazione (driver) e cambio durante la riproduzione")
+do {
+    let all = CA.allDevices()
+    for d in all {
+        print("  \(d.displayName) [\(d.uid)] – \(d.transportLabel), \(d.driverLabel)\(d.isSelectableOutput ? ", selezionabile" : "")\(d.isBuiltInHardware ? ", USCITA INTEGRATA REALE" : "")")
+    }
+    if all.contains(where: { $0.isLoopback && $0.isSelectableOutput }) { print("FALLITO: un driver loopback è selezionabile come uscita"); failures += 1 }
+    if all.contains(where: { $0.isAggregate && $0.isSelectableOutput }) { print("FALLITO: un dispositivo aggregato è selezionabile come uscita"); failures += 1 }
+    if all.contains(where: { $0.isBuiltInHardware && !$0.isAppleDriver }) { print("FALLITO: uscita integrata con driver non Apple"); failures += 1 }
+
+    if let builtIn = all.first(where: { $0.isSelectableOutput && $0.transportType == kAudioDeviceTransportTypeBuiltIn }) {
+        for d in [builtIn, fakeOutput] where CA.hasSettableVolume(d.id, scope: .output) { CA.setVolumeScalar(d.id, scope: .output, 1) }
+        apply(.flat)
+        router.setUserVolume(1, source: .app)
+        Thread.sleep(forTimeInterval: 0.5)
+        var subsB: [String] = [], defaultB: AudioDeviceID?, framesB: UInt64 = 0, peakB: Float = 0
+        var subsC: [String] = []
+        var switchError: String?
+        let toneF = 1000.0
+        let rec = runTimed(seconds: 9.0, generator: { i in 0.2 * Float(sin(2 * Double.pi * toneF * Double(i) / sampleRate)) }) {
+            Thread.sleep(forTimeInterval: 3.0)
+            do {
+                try router.start(output: builtIn, loopback: loopback)           // -> uscita integrata
+                Thread.sleep(forTimeInterval: 0.6)
+                _ = aeq_read_peak(router.dsp, 0)
+                let f0 = aeq_frames_processed(router.dsp)
+                Thread.sleep(forTimeInterval: 1.5)
+                framesB = aeq_frames_processed(router.dsp) - f0
+                peakB = aeq_read_peak(router.dsp, 0)
+                subsB = router.activeSubdeviceUIDs
+                defaultB = CA.defaultOutputDevice()
+                Thread.sleep(forTimeInterval: 0.9)
+                try router.start(output: fakeOutput, loopback: loopback)        // -> di nuovo l'uscita di prova
+                Thread.sleep(forTimeInterval: 0.5)
+                subsC = router.activeSubdeviceUIDs
+            } catch { switchError = error.localizedDescription }
+        }
+        if let e = switchError { print("FALLITO: cambio di uscita: \(e)"); failures += 1 }
+        let env = toneEnvelope(rec.samples, f: toneF)
+        func level(_ a: Double, _ b: Double) -> Double {
+            let i0 = Int(a * sampleRate), i1 = min(env.count, Int(b * sampleRate))
+            guard i1 > i0 else { return 0 }
+            return Double(env[i0..<i1].reduce(0, +)) / Double(i1 - i0)
+        }
+        // La registrazione parte con l'avvio della riproduzione: A = uscita di prova, B = uscita
+        // integrata (l'uscita di prova deve tacere), C = di nuovo l'uscita di prova.
+        let lA = level(0.8, 2.6), lB = level(4.2, 5.6), lC = level(7.4, 8.6)
+        func db(_ x: Double) -> Double { 20 * log10(max(x, 1e-9)) }
+        print(String(format: "  livello sull'uscita di prova: prima %.1f dBFS, con l'uscita integrata %.1f dBFS, dopo il ritorno %.1f dBFS",
+                     db(lA), db(lB), db(lC)))
+        print("  con l'uscita integrata: sotto-dispositivi \(subsB), uscita di sistema = \(defaultB.flatMap { CA.device($0)?.name } ?? "?"), frame elaborati \(framesB), picco nel DSP \(String(format: "%.3f", peakB))")
+        print("  dopo il ritorno: sotto-dispositivi \(subsC)")
+        if db(lB) - db(lA) > -60 { print("FALLITO: con l'uscita integrata l'audio arriva ancora all'uscita precedente (perdita o duplicazione)"); failures += 1 }
+        if abs(db(lC) - db(lA)) > 0.3 { print("FALLITO: dopo il ritorno il livello è cambiato (audio perso o duplicato)"); failures += 1 }
+        if Set(subsB) != Set([builtIn.uid, loopback.uid]) || defaultB != loopback.id || framesB < 48000 || peakB < 0.05 {
+            print("FALLITO: l'uscita integrata non riceve l'audio elaborato"); failures += 1
+        }
+        if Set(subsC) != Set([fakeOutput.uid, loopback.uid]) { print("FALLITO: composizione dopo il ritorno"); failures += 1 }
+        let ours = CA.allDevices().filter { $0.uid.hasPrefix(AudioRouter.aggregateUIDPrefix) }.count
+        print("  dispositivi aggregati di Armonia presenti: \(ours) (atteso al massimo 1)")
+        if ours > 1 { print("FALLITO: dispositivi aggregati duplicati"); failures += 1 }
+    } else {
+        print("  NOTA: nessuna uscita integrata su questa macchina: cambio di uscita non verificato")
+    }
+}
+
 // Bypass: con un profilo attivo ma EQ disattivato il suono deve tornare neutro.
 apply(FactoryProfiles.profile("voice")!.settings, eq: false)
 let byp = zip(measureClean("bypass"), flat).map { 20 * log10($0 / $1) }

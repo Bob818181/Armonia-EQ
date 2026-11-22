@@ -9,6 +9,32 @@ struct AudioDevice: Identifiable, Hashable {
     let transportType: UInt32
     let outputChannels: Int
     let inputChannels: Int
+    /// Driver che ha creato il dispositivo (kAudioObjectPropertyCreator): "com.apple.…" per
+    /// l'hardware gestito da macOS, l'identificativo del plug-in per i driver di terze parti.
+    var creator: String = ""
+    /// Sorgente attiva dell'uscita (es. "Altoparlanti interni", "Cuffie"), se il dispositivo ne ha.
+    var dataSource: String?
+
+    /// Dispositivo creato da un driver Apple, non da un driver software di terze parti.
+    var isAppleDriver: Bool {
+        creator.hasPrefix("com.apple.") || (creator.isEmpty && transportType != kAudioDeviceTransportTypeVirtual)
+    }
+
+    /// Uscita integrata reale del Mac (altoparlanti interni / uscita cuffie): hardware integrato con
+    /// driver Apple. Un driver di terze parti che si dichiara "integrato" NON è considerato tale.
+    var isBuiltInHardware: Bool {
+        transportType == kAudioDeviceTransportTypeBuiltIn && isAppleDriver && !isLoopback && !isAggregate
+    }
+
+    /// Nome come in macOS, con la sorgente attiva se diversa (es. "Uscita integrata – Altoparlanti interni").
+    var displayName: String {
+        guard let ds = dataSource, !ds.isEmpty, ds.caseInsensitiveCompare(name) != .orderedSame else { return name }
+        return "\(name) – \(ds)"
+    }
+
+    var driverLabel: String {
+        isAppleDriver ? "driver Apple" : "driver software di terze parti (\(creator.isEmpty ? "sconosciuto" : creator))"
+    }
 
     /// Driver loopback usato per catturare l'audio di sistema (BlackHole o simili).
     var isLoopback: Bool {
@@ -144,9 +170,25 @@ enum CA {
         guard let uid = getString(id, kAudioDevicePropertyDeviceUID) else { return nil }
         let name = getString(id, kAudioObjectPropertyName) ?? uid
         let transport = getValue(id, address(kAudioDevicePropertyTransportType), default: UInt32(0)) ?? 0
+        let outCh = channelCount(id, scope: .output)
         return AudioDevice(id: id, uid: uid, name: name, transportType: transport,
-                           outputChannels: channelCount(id, scope: .output),
-                           inputChannels: channelCount(id, scope: .input))
+                           outputChannels: outCh,
+                           inputChannels: channelCount(id, scope: .input),
+                           creator: getString(id, kAudioObjectPropertyCreator) ?? "",
+                           dataSource: outCh > 0 ? dataSourceName(id, scope: .output) : nil)
+    }
+
+    /// Nome della sorgente attiva (kAudioDevicePropertyDataSource), es. "Altoparlanti interni".
+    static func dataSourceName(_ device: AudioDeviceID, scope: AudioScope) -> String? {
+        let a = address(kAudioDevicePropertyDataSource, scope: scope.value)
+        guard hasProperty(device, a), var sourceID = getValue(device, a, default: UInt32(0)) else { return nil }
+        var name: Unmanaged<CFString>?
+        var translation = AudioValueTranslation(mInputData: &sourceID, mInputDataSize: UInt32(MemoryLayout<UInt32>.size),
+                                                mOutputData: &name, mOutputDataSize: UInt32(MemoryLayout<Unmanaged<CFString>?>.size))
+        var t = address(kAudioDevicePropertyDataSourceNameForIDCFString, scope: scope.value)
+        var size = UInt32(MemoryLayout<AudioValueTranslation>.size)
+        guard AudioObjectGetPropertyData(device, &t, 0, nil, &size, &translation) == noErr, let n = name else { return nil }
+        return n.takeRetainedValue() as String
     }
 
     static func allDevices() -> [AudioDevice] {

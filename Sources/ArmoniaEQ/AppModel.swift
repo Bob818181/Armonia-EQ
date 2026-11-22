@@ -445,7 +445,7 @@ final class AppModel: ObservableObject {
             if let def = CA.defaultOutputDevice(), let d = outputDevices.first(where: { $0.id == def }) {
                 selectedOutputUID = d.uid
             } else if selectedOutputUID == nil {
-                selectedOutputUID = (outputDevices.first { $0.transportType == kAudioDeviceTransportTypeBuiltIn }
+                selectedOutputUID = (outputDevices.first { $0.isBuiltInHardware }
                     ?? outputDevices.first)?.uid
             }
         }
@@ -486,7 +486,7 @@ final class AppModel: ObservableObject {
         let current = router.outputDevice
         if let current = current, !CA.isAlive(current.id) || !outputDevices.contains(where: { $0.uid == current.uid }) {
             // Il dispositivo in uso è stato scollegato (es. DAC USB): ripiega sugli altoparlanti interni.
-            selectedOutputUID = (outputDevices.first { $0.transportType == kAudioDeviceTransportTypeBuiltIn }
+            selectedOutputUID = (outputDevices.first { $0.isBuiltInHardware }
                 ?? outputDevices.first)?.uid
             scheduleRestart(after: 0.2)
         } else if case .running = status {
@@ -579,6 +579,7 @@ final class AppModel: ObservableObject {
             try router.start(output: output, loopback: loopback, initialVolume: initial)
             if let info = router.running {
                 status = .running(info)
+                UIDebug.log("uscita: \(info.outputDetail)")
                 pushAutoGain() // la compensazione dipende dalla frequenza di campionamento
                 setVolumeSilently(router.userVolume)
                 muted = router.userMuted
