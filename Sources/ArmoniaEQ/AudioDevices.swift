@@ -9,8 +9,10 @@ struct AudioDevice: Identifiable, Hashable {
     let transportType: UInt32
     let outputChannels: Int
     let inputChannels: Int
-    /// Driver che ha creato il dispositivo (kAudioObjectPropertyCreator): "com.apple.…" per
-    /// l'hardware gestito da macOS, l'identificativo del plug-in per i driver di terze parti.
+    /// Driver del dispositivo: identificativo del plug-in Core Audio che lo possiede
+    /// (kAudioObjectPropertyOwner -> kAudioPlugInPropertyBundleID), es. "audio.existential.BlackHole2ch";
+    /// "com.apple.…" per i driver Apple. (kAudioObjectPropertyCreator non basta: sui macOS recenti
+    /// restituisce il servizio di sistema che ospita i driver anche per quelli di terze parti.)
     var creator: String = ""
     /// Sorgente attiva dell'uscita (es. "Altoparlanti interni", "Cuffie"), se il dispositivo ne ha.
     var dataSource: String?
@@ -174,8 +176,19 @@ enum CA {
         return AudioDevice(id: id, uid: uid, name: name, transportType: transport,
                            outputChannels: outCh,
                            inputChannels: channelCount(id, scope: .input),
-                           creator: getString(id, kAudioObjectPropertyCreator) ?? "",
+                           creator: driverBundleID(id),
                            dataSource: outCh > 0 ? dataSourceName(id, scope: .output) : nil)
+    }
+
+    /// Identificativo del driver che possiede il dispositivo (vedi AudioDevice.creator).
+    static func driverBundleID(_ device: AudioDeviceID) -> String {
+        if let owner = getValue(device, address(kAudioObjectPropertyOwner), default: AudioObjectID(0)), owner != 0,
+           owner != systemObject,
+           getValue(owner, address(kAudioObjectPropertyClass), default: AudioClassID(0)) == kAudioPlugInClassID,
+           let bundle = getString(owner, kAudioPlugInPropertyBundleID), !bundle.isEmpty {
+            return bundle
+        }
+        return getString(device, kAudioObjectPropertyCreator) ?? ""
     }
 
     /// Nome della sorgente attiva (kAudioDevicePropertyDataSource), es. "Altoparlanti interni".

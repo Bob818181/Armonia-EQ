@@ -856,51 +856,52 @@ do {
     if all.contains(where: { $0.isLoopback && $0.isSelectableOutput }) { print("FALLITO: un driver loopback è selezionabile come uscita"); failures += 1 }
     if all.contains(where: { $0.isAggregate && $0.isSelectableOutput }) { print("FALLITO: un dispositivo aggregato è selezionabile come uscita"); failures += 1 }
     if all.contains(where: { $0.isBuiltInHardware && !$0.isAppleDriver }) { print("FALLITO: uscita integrata con driver non Apple"); failures += 1 }
+    if let bh = all.first(where: { $0.isLoopback }), bh.isAppleDriver { print("FALLITO: BlackHole riconosciuto come driver Apple (\(bh.creator))"); failures += 1 }
 
     if let builtIn = all.first(where: { $0.isSelectableOutput && $0.transportType == kAudioDeviceTransportTypeBuiltIn }) {
         for d in [builtIn, fakeOutput] where CA.hasSettableVolume(d.id, scope: .output) { CA.setVolumeScalar(d.id, scope: .output, 1) }
         apply(.flat)
         router.setUserVolume(1, source: .app)
         Thread.sleep(forTimeInterval: 0.5)
-        var subsB: [String] = [], defaultB: AudioDeviceID?, framesB: UInt64 = 0, peakB: Float = 0
-        var subsC: [String] = []
-        var switchError: String?
+        // Tre registrazioni separate dall'uscita di prova (Core Audio invalida un registratore quando
+        // riconfigura il dispositivo): A = uscita di prova, B = uscita integrata (l'uscita di prova deve
+        // tacere), C = di nuovo l'uscita di prova (stesso livello di A: niente perdite né duplicazioni).
         let toneF = 1000.0
-        let rec = runTimed(seconds: 9.0, generator: { i in 0.2 * Float(sin(2 * Double.pi * toneF * Double(i) / sampleRate)) }) {
-            Thread.sleep(forTimeInterval: 3.0)
-            do {
-                try router.start(output: builtIn, loopback: loopback)           // -> uscita integrata
-                Thread.sleep(forTimeInterval: 0.6)
-                _ = aeq_read_peak(router.dsp, 0)
-                let f0 = aeq_frames_processed(router.dsp)
-                Thread.sleep(forTimeInterval: 1.5)
-                framesB = aeq_frames_processed(router.dsp) - f0
-                peakB = aeq_read_peak(router.dsp, 0)
-                subsB = router.activeSubdeviceUIDs
-                defaultB = CA.defaultOutputDevice()
-                Thread.sleep(forTimeInterval: 0.9)
-                try router.start(output: fakeOutput, loopback: loopback)        // -> di nuovo l'uscita di prova
-                Thread.sleep(forTimeInterval: 0.5)
-                subsC = router.activeSubdeviceUIDs
-            } catch { switchError = error.localizedDescription }
+        let toneGen: (Int) -> Float = { i in 0.2 * Float(sin(2 * Double.pi * toneF * Double(i) / sampleRate)) }
+        func toneLevelDb(_ x: [Float]) -> Double {
+            let env = toneEnvelope(x, f: toneF)
+            let i0 = Int(0.6 * sampleRate), i1 = env.count - Int(0.3 * sampleRate)
+            guard i1 > i0 + 4800 else { return -200 }
+            let m = Double(env[i0..<i1].reduce(0, +)) / Double(i1 - i0)
+            return 20 * log10(max(m, 1e-9))
         }
-        if let e = switchError { print("FALLITO: cambio di uscita: \(e)"); failures += 1 }
-        let env = toneEnvelope(rec.samples, f: toneF)
-        func level(_ a: Double, _ b: Double) -> Double {
-            let i0 = Int(a * sampleRate), i1 = min(env.count, Int(b * sampleRate))
-            guard i1 > i0 else { return 0 }
-            return Double(env[i0..<i1].reduce(0, +)) / Double(i1 - i0)
-        }
-        // La registrazione parte con l'avvio della riproduzione: A = uscita di prova, B = uscita
-        // integrata (l'uscita di prova deve tacere), C = di nuovo l'uscita di prova.
-        let lA = level(0.8, 2.6), lB = level(4.2, 5.6), lC = level(7.4, 8.6)
-        func db(_ x: Double) -> Double { 20 * log10(max(x, 1e-9)) }
-        print(String(format: "  livello sull'uscita di prova: prima %.1f dBFS, con l'uscita integrata %.1f dBFS, dopo il ritorno %.1f dBFS",
-                     db(lA), db(lB), db(lC)))
+        let lA = toneLevelDb(runTimed(seconds: 2.5, generator: toneGen) {}.samples)
+        var subsB: [String] = [], subsC: [String] = []
+        var defaultB: AudioDeviceID?, framesB: UInt64 = 0, peakB: Float = 0
+        var lB = -200.0, lC = -200.0
+        do {
+            try router.start(output: builtIn, loopback: loopback)               // -> uscita integrata
+            Thread.sleep(forTimeInterval: 0.5)
+            _ = aeq_read_peak(router.dsp, 0)
+            let f0 = aeq_frames_processed(router.dsp)
+            let recB = runTimed(seconds: 2.5, generator: toneGen) {}.samples
+            framesB = aeq_frames_processed(router.dsp) - f0
+            peakB = aeq_read_peak(router.dsp, 0)
+            subsB = router.activeSubdeviceUIDs
+            defaultB = CA.defaultOutputDevice()
+            lB = recB.isEmpty ? -200 : 20 * log10(max(Double(recB.map { abs($0) }.max() ?? 0), 1e-9))
+            try router.start(output: fakeOutput, loopback: loopback)            // -> di nuovo l'uscita di prova
+            Thread.sleep(forTimeInterval: 0.5)
+            subsC = router.activeSubdeviceUIDs
+            lC = toneLevelDb(runTimed(seconds: 2.5, generator: toneGen) {}.samples)
+        } catch { print("FALLITO: cambio di uscita: \(error.localizedDescription)"); failures += 1 }
+        print(String(format: "  uscita di prova: livello del tono prima %.2f dBFS; picco mentre suona l'uscita integrata %.1f dBFS; livello dopo il ritorno %.2f dBFS",
+                     lA, lB, lC))
         print("  con l'uscita integrata: sotto-dispositivi \(subsB), uscita di sistema = \(defaultB.flatMap { CA.device($0)?.name } ?? "?"), frame elaborati \(framesB), picco nel DSP \(String(format: "%.3f", peakB))")
         print("  dopo il ritorno: sotto-dispositivi \(subsC)")
-        if db(lB) - db(lA) > -60 { print("FALLITO: con l'uscita integrata l'audio arriva ancora all'uscita precedente (perdita o duplicazione)"); failures += 1 }
-        if abs(db(lC) - db(lA)) > 0.3 { print("FALLITO: dopo il ritorno il livello è cambiato (audio perso o duplicato)"); failures += 1 }
+        if lA < -40 { print("FALLITO: nessun audio sull'uscita di prova prima del cambio"); failures += 1 }
+        if lB > -90 { print("FALLITO: con l'uscita integrata l'audio arriva ancora all'uscita precedente (perdita o duplicazione)"); failures += 1 }
+        if abs(lC - lA) > 0.3 { print("FALLITO: dopo il ritorno il livello è cambiato (audio perso o duplicato)"); failures += 1 }
         if Set(subsB) != Set([builtIn.uid, loopback.uid]) || defaultB != loopback.id || framesB < 48000 || peakB < 0.05 {
             print("FALLITO: l'uscita integrata non riceve l'audio elaborato"); failures += 1
         }
