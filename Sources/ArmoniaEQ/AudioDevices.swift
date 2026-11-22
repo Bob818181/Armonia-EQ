@@ -180,15 +180,50 @@ enum CA {
                            dataSource: outCh > 0 ? dataSourceName(id, scope: .output) : nil)
     }
 
-    /// Identificativo del driver che possiede il dispositivo (vedi AudioDevice.creator).
+    /// Identificativo del driver che possiede il dispositivo (vedi AudioDevice.creator):
+    /// 1) catena dei proprietari (kAudioObjectPropertyOwner) fino a un oggetto plug-in;
+    /// 2) elenco dei plug-in di Core Audio e dei loro dispositivi;
+    /// 3) in mancanza, kAudioObjectPropertyCreator.
     static func driverBundleID(_ device: AudioDeviceID) -> String {
-        if let owner = getValue(device, address(kAudioObjectPropertyOwner), default: AudioObjectID(0)), owner != 0,
-           owner != systemObject,
-           getValue(owner, address(kAudioObjectPropertyClass), default: AudioClassID(0)) == kAudioPlugInClassID,
-           let bundle = getString(owner, kAudioPlugInPropertyBundleID), !bundle.isEmpty {
-            return bundle
+        func isPlugIn(_ obj: AudioObjectID) -> Bool {
+            let cls = getValue(obj, address(kAudioObjectPropertyClass), default: AudioClassID(0))
+            let base = getValue(obj, address(kAudioObjectPropertyBaseClass), default: AudioClassID(0))
+            return cls == kAudioPlugInClassID || base == kAudioPlugInClassID
         }
+        var obj = device
+        for _ in 0..<4 {
+            guard let owner = getValue(obj, address(kAudioObjectPropertyOwner), default: AudioObjectID(0)),
+                  owner != 0, owner != systemObject, owner != obj else { break }
+            if isPlugIn(owner), let bundle = getString(owner, kAudioPlugInPropertyBundleID), !bundle.isEmpty { return bundle }
+            obj = owner
+        }
+        if let bundle = plugInBundleByDevice()[device] { return bundle }
         return getString(device, kAudioObjectPropertyCreator) ?? ""
+    }
+
+    /// Mappa dispositivo -> identificativo del plug-in, dall'elenco dei plug-in di Core Audio.
+    static func plugInBundleByDevice() -> [AudioDeviceID: String] {
+        var map: [AudioDeviceID: String] = [:]
+        let plugins = getArray(systemObject, address(kAudioHardwarePropertyPlugInList), of: AudioObjectID.self, zero: 0)
+        for p in plugins {
+            guard let bundle = getString(p, kAudioPlugInPropertyBundleID), !bundle.isEmpty else { continue }
+            for d in getArray(p, address(kAudioPlugInPropertyDeviceList), of: AudioObjectID.self, zero: 0) { map[d] = bundle }
+        }
+        return map
+    }
+
+    /// Diagnostica: catena dei proprietari di un oggetto (classe e identificativo).
+    static func ownerChain(_ device: AudioDeviceID) -> String {
+        var parts: [String] = []
+        var obj = device
+        for _ in 0..<4 {
+            guard let owner = getValue(obj, address(kAudioObjectPropertyOwner), default: AudioObjectID(0)), owner != 0, owner != obj else { break }
+            let cls = getValue(owner, address(kAudioObjectPropertyClass), default: AudioClassID(0)) ?? 0
+            parts.append("\(owner):\(CoreAudioError.fourCC(OSStatus(bitPattern: cls)))\(getString(owner, kAudioPlugInPropertyBundleID).map { "(\($0))" } ?? "")")
+            if owner == systemObject { break }
+            obj = owner
+        }
+        return parts.joined(separator: " → ")
     }
 
     /// Nome della sorgente attiva (kAudioDevicePropertyDataSource), es. "Altoparlanti interni".

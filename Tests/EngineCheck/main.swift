@@ -850,8 +850,10 @@ do {
 print("\nFase 8: dispositivi di uscita – identificazione (driver) e cambio durante la riproduzione")
 do {
     let all = CA.allDevices()
+    print("  plug-in di Core Audio: \(CA.plugInBundleByDevice().values.sorted())")
     for d in all {
         print("  \(d.displayName) [\(d.uid)] – \(d.transportLabel), \(d.driverLabel)\(d.isSelectableOutput ? ", selezionabile" : "")\(d.isBuiltInHardware ? ", USCITA INTEGRATA REALE" : "")")
+        print("      driver \(d.creator.isEmpty ? "?" : d.creator); proprietari: \(CA.ownerChain(d.id))")
     }
     if all.contains(where: { $0.isLoopback && $0.isSelectableOutput }) { print("FALLITO: un driver loopback è selezionabile come uscita"); failures += 1 }
     if all.contains(where: { $0.isAggregate && $0.isSelectableOutput }) { print("FALLITO: un dispositivo aggregato è selezionabile come uscita"); failures += 1 }
