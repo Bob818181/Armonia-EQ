@@ -1,4 +1,4 @@
-commit 46fca82bd79dbf7a2860bb13b8cb54fdaf8d39ca
-data 2026-11-22T00:30Z
+commit f02798c3fce39b23e790bef6c979130b343b68d6
+data 2026-11-22T00:46Z
 architetture x86_64 arm64
 macOS minimo 12.0
